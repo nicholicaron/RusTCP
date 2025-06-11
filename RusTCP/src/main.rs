@@ -1,6 +1,19 @@
 use std::io;
+use std::collections::HashMap;
+use std::net::Ipv4Addr;
+
+// Connection Quad: Unique Identifier for TCP connections
+// Used as a key in TCB (Transmission Control Block) Hashmap
+#[derive(Clone, Copy, Debug, Hash, Eq, PartialEq)]
+struct Quad{
+    source_socket: (Ipv4Addr, u16),
+    destination_socket: (Ipv4Addr, u16),
+}
 
 fn main() -> io::Result<()> {
+    // Initialize a HashMap to store TCP connection states against their connection Quad tuple
+    let mut connections: HashMap<Quad, tcp::State> = Default::default();
+
     // Create a new TUN interface named "tun0" in TUN mode.
     let nic = tun_tap::Iface::new("tun0", tun_tap::Mode::Tun)?;
 
@@ -11,6 +24,7 @@ fn main() -> io::Result<()> {
     loop {
         // Receive data from the TUN interface and store the number of bytes received in `nbytes`.
         let nbytes = nic.recv(&mut buf[..])?;
+
         // TUN/TAP frame format (source: https://www.kernel.org/doc/Documentation/networking/tuntap.txt sec. 3.2):
         // [Note: big endian ordering]
         // First 2 bytes: Flags
@@ -61,8 +75,24 @@ fn main() -> io::Result<()> {
                 match etherparse::TcpHeaderSlice::from_slice(&buf[4 + p.slice().len()..]) {
                     // If parsing TCP Header is successful we can proceed
                     Ok(tcp_header) => {
-                        // Print Source IP, Destination Ip, and Destination Port
-                        eprintln!("{} -> {}: TCP to port {}", source_addr, destination_addr, tcp_header.destination_port());
+                        let data_start_index = 4 + ipv4_header.slice().len() + tcp_header.slice().len();
+
+                        // Check for corresponding existing entry in connection hashmap, create if none exists
+                        match connections.entry(Quad{
+                            src: (source_addr, tcp_header.source_port()),
+                            dst: (destination_addr, tcp_header.destination_port()),
+                        }) {
+                            // Connection exists, print metadata about packet
+                            Entry::Occupied(mut connection) => {
+                                connection.get_mut().on_packet(&mut nic, ipv4_header, tcp_header, &buf[data_start_index..nbytes])?;
+                            }
+                            // Connection does not exist, try to create it
+                            Entry::Vacant(entry) => {
+                                if let Some(connection) = tcp::Connection::on_accept(&mut nic, ipv4_header, tcp_header, &buf[data_start_index..nbytes])? {
+                                    entry.insert(connection);
+                                }
+                            }
+                        }
                     }
                     Err(e) => {
                         eprintln!("An error occurred while parsing TCP packet: {:?}", e);
