@@ -1,0 +1,8 @@
+[package]
+name = "RusTCP"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tun-tap = "0.1.4"
+etherparse = "0.13.0"
