@@ -1,9 +1,11 @@
 use std::io;
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
+mod tcp;
 
 // Connection Quad: Unique Identifier for TCP connections
 // Used as a key in TCB (Transmission Control Block) Hashmap
+// 4-tuple of source IP, source port, destination IP, and destination port
 #[derive(Clone, Copy, Debug, Hash, Eq, PartialEq)]
 struct Quad{
     source_socket: (Ipv4Addr, u16),
@@ -14,7 +16,7 @@ fn main() -> io::Result<()> {
     // Initialize a HashMap to store TCP connection states against their connection Quad tuple
     let mut connections: HashMap<Quad, tcp::State> = Default::default();
 
-    // Create a new TUN interface named "tun0" in TUN mode.
+    // Create a new virtual NIC named "tun0" in TUN mode.
     let nic = tun_tap::Iface::new("tun0", tun_tap::Mode::Tun)?;
 
     // Define a buffer of size 1504 bytes (maximum Ethernet frame size without CRC) to store received data.

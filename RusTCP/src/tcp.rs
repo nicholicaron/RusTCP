@@ -88,6 +88,47 @@ pub enum State {
     Estab,
 }
 
+pub struct Connection {
+    state: State,
+    // Keeps track of various sequence numbers (packet ordering label) for data we've sent
+    send: SendSequenceSpace,
+    // Keeps track of sequence numbers (packet ordering label) for data we're receiving
+    recv: RecvSequenceSpace,
+    ip: etherparse::Ipv4Header,
+    tcp: etherparse::TcpHeader,
+}
+
+struct SendSequenceSpace {
+    // SND.UNA: Oldest sequence number not yet acknowledged by the receiver
+    una: u32,
+    // SND.NXT: Next sequence number to be used for new data for transmission
+    nxt: u32,
+    // SND.WND: Window Size or # of bytes allowed to be outstanding (unacknowledged)
+    wnd: u16,
+    // Indicates if the URG control bit is set -- if True, the sequence number in the urgent
+    // pointer field is in
+    up: bool,
+    // Sequence number of the segment used for the last window update
+    wl1: usize,
+    // Acknowledgement number used for the last window update
+    wl2: usize,
+    // Initial Send Sequence number -- the first sequence number used when the connection was
+    // established
+    iss: u32,
+}
+
+struct RecvSequenceSpace {
+    // RCV.NXT: Next expected sequence number that the receiver is expecting
+    nxt: u32,
+    // RCV.WND: The number of bytes that the receiver is willing to accept
+    wnd: u16,
+    // Indicates if the URG control bit is set on received data
+    up: bool,
+    // Initial Receive Sequence number: Sequence number of the first byte received
+    irs: u32,
+}
+
+
 // Sets default TCP state to 'Listen'
 impl Default for State {
     fn default() -> Self {
@@ -112,5 +153,110 @@ impl State {
             tcp_header.destination_port(),
             tcp_payload.len()
         );
+    }
+}
+
+
+impl Connection {
+    // Handles incoming TCP packet for establishing a connection
+    // If incoming packet is a SYN, it prepares and sends a SYN-ACK packet in response.
+    // Otherwise, the packet is ignored. 
+    //
+    // Returns a new `Connection` in the `SynRcvd` state if the incoming packet was a SYN packet
+    pub fn accept<'a>(
+        nic: &mut tun_tap::Iface,
+        ipv4_header: etherparse::Ipv4HeaderSlice<'a>,
+        tcp_header: etherparse::TcpHeaderSlice<'a>,
+        tcp_payload: &'a [u8],
+    ) -> io::Result<Option<Self>> {
+        let mut buf = [0u8; 1500];
+        if !tcp_header.syn() {
+            // Ignore packets that aren't SYN packets
+            return Ok(None);
+        }
+        let iss = 0;
+        let wnd = 10;
+        let mut connection = Connection {
+            state: State::SynRcvd,
+            send: SendSequenceSpace {
+                iss,
+                una: iss,
+                nxt: 1,
+                wnd: wnd,
+                up: false,
+                wl1: 0,
+                wl2: 0,
+            },
+            recv: RecvSequenceSpace {
+                // Initialize receive sequence number to the incoming sequence number
+                irs: tcp_header.sequence_number(),
+                // Expect the next byte after the incoming sequence number
+                nxt: tcp_header.sequence_number() + 1,
+                // Use incoming packet's window size for our receive window
+                wnd: tcph.window_size(),
+                up: false,
+            },
+
+            // Prepare SYN-ACK packet in response to SYN packet
+            tcp: etherparse::TcpHeader::New(
+                tcp_header.destination_port(),
+                tcp_header.source_port(),
+                iss,
+                wnd,
+            ),
+            ip: etherparse::Ipv4Header::new(
+                syn_ack.header_len(),               // payload length
+                64,                                 // Time-to-live
+                etherparse::IpNumber::Tcp as u8,    // Protocol
+                [                                   // Source
+                    ip_header.destination()[0],
+                    ip_header.destination()[1],
+                    ip_header.destination()[2],
+                    ip_header.destination()[3],
+                ],
+                [                                   // Destination
+                    ip_header.source()[0],
+                    ip_header.source()[1],
+                    ip_header.source()[2],
+                    ip_header.source()[3],
+                ],
+            )
+        };
+
+        connection.tcp.acknowledgement_number = c.recv.nxt;
+        connection.tcp.syn = true;
+        connection.tcp.ack = true;
+
+        connection.ip.set_payload_len(c.tcp.header_len() as usize + 0);
+
+        // Calculate and set the checksum for the SYN-ACK packet
+        connection.tcp.checksum = connection.tcp
+            .calc_checksum_ipv4(&connection.ip, &[]) // Empty payload: Empty array
+            .expect("Failed to compute checksum");
+
+        // Write out TCP and IP headers to a buffer to be sent
+        // Kinda confusing variable shadowing pattern here, is a common Rust idiom:
+        let unwritten: usize = {
+            let mut unwritten = &mut buf[..]; // (type: &mut [u8]) - shadows outer `unwritten`
+            ip.write(&mut unwritten);         // Writes to inner unwritten
+            syn_ack.write(&mut unwritten)     // Writes to inner unwritten
+            unwritten.len()                   // Returns length of inner unwritten, assign to outer
+        };
+
+        // Send the SYN-ACK packet
+        nic.send(&buf[..unwritten])?;
+        Ok(Some(connection))
+    }
+
+    // Function to handle incoming packets once a connection is established
+    pub fn on_packet<'a>(
+        &mut self,
+        nic: &mut tun_tap::Iface,
+        ipv4_header: etherparse::Ipv4HeaderSlice<'a>,
+        tcp_header: etherparse::TcpHeaderSlice<'a>,
+        tcp_payload: &'a [u8], 
+    ) -> io::Result<()> {
+        // Process incoming packet based on its flags and current connection state
+        Ok(())
     }
 }
